@@ -88,9 +88,8 @@ function onBoard(r,c){return r>=0&&r<10&&c>=0&&c<9;}
 function inPalace(r,c,s){return s==='r'?(r>=7&&r<=9&&c>=3&&c<=5):(r>=0&&r<=2&&c>=3&&c<=5);}
 function getAt(board,r,c){return board.find(p=>p.r===r&&p.c===c)||null;}
 
-function getRawMoves(p,board){
+function getRawMoves(p,board,isHiddenMode=false){
   const mv=[],{s,r,c}=p;
-  // Quân úp dùng posType, quân đã lật dùng t
   const t = (p.hidden && p.posType) ? p.posType : p.t;
   const add=(nr,nc)=>{
     if(!onBoard(nr,nc))return;
@@ -101,16 +100,13 @@ function getRawMoves(p,board){
   if(t==='K'){[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
   else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;
-    if(p.hidden) add(nr,nc); // úp: đi cả bàn
+    if(isHiddenMode) add(nr,nc);
     else if(inPalace(nr,nc,s)) add(nr,nc);
   });}
   else if(t==='B'){[[2,2],[2,-2],[-2,2],[-2,-2]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
     if(getAt(board,r+dr/2,c+dc/2))return;
-    if(!p.hidden){ // ngửa: giới hạn sân nhà
-      if(s==='r'&&nr<5)return;
-      if(s==='b'&&nr>4)return;
-    }
+    if(!isHiddenMode){if(s==='r'&&nr<5)return;if(s==='b'&&nr>4)return;}
     add(nr,nc);});}
   else if(t==='N'){[[1,2],[1,-2],[-1,2],[-1,-2],[2,1],[2,-1],[-2,1],[-2,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
@@ -130,35 +126,32 @@ function getRawMoves(p,board){
   return mv;
 }
 
-function isInCheck(s,board){
+function isInCheck(s,board,isHiddenMode=false){
   const k=board.find(p=>p.t==='K'&&p.s===s);
-  if(!k)return true; // tướng bị bắt = thua
+  if(!k)return true;
   const opp=s==='r'?'b':'r';
-  return board.filter(p=>p.s===opp).some(p=>getRawMoves(p,board).some(([mr,mc])=>mr===k.r&&mc===k.c));
+  return board.filter(p=>p.s===opp).some(p=>getRawMoves(p,board,isHiddenMode).some(([mr,mc])=>mr===k.r&&mc===k.c));
 }
 
-function getSafeMoves(p,board){
-  return getRawMoves(p,board).filter(([mr,mc])=>{
+function getSafeMoves(p,board,isHiddenMode=false){
+  return getRawMoves(p,board,isHiddenMode).filter(([mr,mc])=>{
     const sim=board.filter(x=>!(x.r===mr&&x.c===mc&&x.s!==p.s)).map(x=>({...x}));
     const mp=sim.find(x=>x.id===p.id);
     if(!mp)return false;mp.r=mr;mp.c=mc;
-    return !isInCheck(p.s,sim);
+    return !isInCheck(p.s,sim,isHiddenMode);
   });
 }
 
-function hasAnyMoves(s,board){
-  return board.filter(p=>p.s===s).some(p=>getSafeMoves(p,board).length>0);
+function hasAnyMoves(s,board,isHiddenMode=false){
+  return board.filter(p=>p.s===s).some(p=>getSafeMoves(p,board,isHiddenMode).length>0);
 }
 
-function checkResult(board,justMovedSide){
-  // Phe tiếp theo
+function checkResult(board,justMovedSide,isHiddenMode=false){
   const next=justMovedSide==='r'?'b':'r';
-  // Không còn nước đi hợp lệ = thua (chiếu bí hoặc hết nước)
-  if(!hasAnyMoves(next,board)){
-    return justMovedSide; // phe vừa đi thắng
-  }
-  return null; // chưa kết thúc
+  if(!hasAnyMoves(next,board,isHiddenMode)) return justMovedSide;
+  return null;
 }
+
 
 // ── SOCKET EVENTS ──
 io.on('connection', socket => {
@@ -267,7 +260,7 @@ io.on('connection', socket => {
     });
 
     // Kiểm tra kết thúc ngay sau khi broadcast
-    const winner = checkResult(room.board, justMoved);
+    const winner = checkResult(room.board, justMoved, room.mode==='hidden');
     if (winner !== null) {
       endGame(roomId, winner, 'Chiếu hết');
     }
