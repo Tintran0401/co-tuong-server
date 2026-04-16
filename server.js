@@ -294,47 +294,20 @@ io.on('connection', socket => {
     const player = room.players.find(p => p.id === socket.id);
     if (!player) return;
     const winner = player.side === 'r' ? 'b' : 'r';
-    endGame(roomId, winner, 'Đầu hàng');
-  });
-
-  // Xem ván
-  socket.on('spectate', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) { socket.emit('error', 'Phòng không tồn tại'); return; }
-    socket.join(roomId);
-    room.spectators.push(socket.id);
-    socket.emit('spectate_start', {
-      board: room.board, turn: room.turn,
-      players: room.players, moves: room.moves, mode: room.mode
-    });
-  });
-
-  // Danh sách phòng đang chơi (cho màn spectate)
-  socket.on('get_rooms', () => {
-    const list = Object.values(rooms).map(r => ({
-      id: r.id, mode: r.mode,
-      players: r.players.map(p => p.name),
-      moves: r.moves.length,
-      spectators: r.spectators.length
-    }));
-    socket.emit('rooms_list', list);
+    endGame(roomId, winner, 'opponent_quit'); // dùng reason nhất quán
   });
 
   // Ngắt kết nối
   socket.on('disconnect', () => {
     console.log(`[-] ${socket.id} ngắt kết nối`);
-
-    // Xóa khỏi hàng chờ
     Object.keys(queue).forEach(m => {
       if (queue[m] === socket.id) queue[m] = null;
     });
-
-    // Nếu đang trong phòng → đối thủ thắng
     Object.values(rooms).forEach(room => {
       const player = room.players.find(p => p.id === socket.id);
       if (player) {
         const winner = player.side === 'r' ? 'b' : 'r';
-        endGame(room.id, winner, 'Đối thủ mất kết nối');
+        endGame(room.id, winner, 'opponent_quit');
       }
     });
   });
