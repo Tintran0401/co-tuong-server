@@ -57,17 +57,21 @@ function mkBoard() {
 
 function mkHiddenBoard() {
   const board = mkBoard();
-  const nonKings = board.filter(p => p.t !== 'K');
-  const positions = nonKings.map(p => ({ r: p.r, c: p.c }));
-  for (let i = positions.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [positions[i], positions[j]] = [positions[j], positions[i]];
-  }
-  nonKings.forEach((p, i) => { p.r = positions[i].r; p.c = positions[i].c; });
-  board.forEach(p => {
-    if (p.t === 'K') { p.hidden = false; p.revealed = true; }
-    else { p.hidden = true; p.revealed = false; }
+  // Xáo trộn MỖI PHE trong sân của mình
+  ['r','b'].forEach(side=>{
+    const pieces = board.filter(p => p.s === side && p.t !== 'K');
+    const positions = pieces.map(p => ({ r: p.r, c: p.c }));
+    // Fisher-Yates shuffle trong sân phe đó
+    for (let i = positions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [positions[i], positions[j]] = [positions[j], positions[i]];
+    }
+    pieces.forEach((p, i) => { p.r = positions[i].r; p.c = positions[i].c; });
+    // Úp mặt tất cả trừ tướng
+    pieces.forEach(p => { p.hidden = true; p.revealed = false; });
   });
+  // Tướng ngửa
+  board.filter(p => p.t === 'K').forEach(p => { p.hidden = false; p.revealed = true; });
   return board;
 }
 
