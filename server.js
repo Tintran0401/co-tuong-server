@@ -71,6 +71,73 @@ function mkHiddenBoard() {
   return board;
 }
 
+// ── CHESS LOGIC TRÊN SERVER ──
+function onBoard(r,c){return r>=0&&r<10&&c>=0&&c<9;}
+function inPalace(r,c,s){return s==='r'?(r>=7&&r<=9&&c>=3&&c<=5):(r>=0&&r<=2&&c>=3&&c<=5);}
+function getAt(board,r,c){return board.find(p=>p.r===r&&p.c===c)||null;}
+
+function getRawMoves(p,board){
+  const mv=[],{t,s,r,c}=p;
+  const add=(nr,nc)=>{
+    if(!onBoard(nr,nc))return;
+    const tg=getAt(board,nr,nc);
+    if(tg&&tg.s===s)return;
+    mv.push([nr,nc]);
+  };
+  if(t==='K'){[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
+  else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
+  else if(t==='B'){[[2,2],[2,-2],[-2,2],[-2,-2]].forEach(([dr,dc])=>{
+    const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
+    if(getAt(board,r+dr/2,c+dc/2))return;
+    if(s==='r'&&nr<5)return;if(s==='b'&&nr>4)return;add(nr,nc);});}
+  else if(t==='N'){[[1,2],[1,-2],[-1,2],[-1,-2],[2,1],[2,-1],[-2,1],[-2,-1]].forEach(([dr,dc])=>{
+    const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
+    const blk=Math.abs(dr)===2?getAt(board,r+(dr>0?1:-1),c):getAt(board,r,c+(dc>0?1:-1));
+    if(blk)return;add(nr,nc);});}
+  else if(t==='R'){[[0,1],[0,-1],[1,0],[-1,0]].forEach(([dr,dc])=>{
+    let nr=r+dr,nc=c+dc;
+    while(onBoard(nr,nc)){const tg=getAt(board,nr,nc);if(tg){if(tg.s!==s)mv.push([nr,nc]);break;}mv.push([nr,nc]);nr+=dr;nc+=dc;}});}
+  else if(t==='C'){[[0,1],[0,-1],[1,0],[-1,0]].forEach(([dr,dc])=>{
+    let nr=r+dr,nc=c+dc,j=false;
+    while(onBoard(nr,nc)){const tg=getAt(board,nr,nc);
+      if(!j){if(tg)j=true;else mv.push([nr,nc]);}
+      else{if(tg){if(tg.s!==s)mv.push([nr,nc]);break;}}nr+=dr;nc+=dc;}});}
+  else if(t==='P'){
+    if(s==='r'){if(r>0)add(r-1,c);if(r<=4){add(r,c+1);add(r,c-1);}}
+    else{if(r<9)add(r+1,c);if(r>=5){add(r,c+1);add(r,c-1);}}}
+  return mv;
+}
+
+function isInCheck(s,board){
+  const k=board.find(p=>p.t==='K'&&p.s===s);
+  if(!k)return true; // tướng bị bắt = thua
+  const opp=s==='r'?'b':'r';
+  return board.filter(p=>p.s===opp).some(p=>getRawMoves(p,board).some(([mr,mc])=>mr===k.r&&mc===k.c));
+}
+
+function getSafeMoves(p,board){
+  return getRawMoves(p,board).filter(([mr,mc])=>{
+    const sim=board.filter(x=>!(x.r===mr&&x.c===mc&&x.s!==p.s)).map(x=>({...x}));
+    const mp=sim.find(x=>x.id===p.id);
+    if(!mp)return false;mp.r=mr;mp.c=mc;
+    return !isInCheck(p.s,sim);
+  });
+}
+
+function hasAnyMoves(s,board){
+  return board.filter(p=>p.s===s).some(p=>getSafeMoves(p,board).length>0);
+}
+
+function checkResult(board,justMovedSide){
+  // Phe tiếp theo
+  const next=justMovedSide==='r'?'b':'r';
+  // Không còn nước đi hợp lệ = thua (chiếu bí hoặc hết nước)
+  if(!hasAnyMoves(next,board)){
+    return justMovedSide; // phe vừa đi thắng
+  }
+  return null; // chưa kết thúc
+}
+
 // ── SOCKET EVENTS ──
 io.on('connection', socket => {
   console.log(`[+] ${socket.id} kết nối`);
@@ -160,6 +227,7 @@ io.on('connection', socket => {
       room.board.splice(capIdx, 1);
     }
 
+    const justMoved = piece.s; // phe vừa đi
     const from = { r: piece.r, c: piece.c };
     piece.r = toR; piece.c = toC;
 
@@ -167,7 +235,7 @@ io.on('connection', socket => {
     room.turn = room.turn === 'r' ? 'b' : 'r';
     room.moves.push({ pieceId, from, to: { r: toR, c: toC } });
 
-    // Broadcast cho cả phòng
+    // Broadcast nước đi cho cả phòng
     io.to(roomId).emit('moved', {
       pieceId, from, to: { r: toR, c: toC },
       captured: captured ? captured.id : null,
@@ -176,11 +244,11 @@ io.on('connection', socket => {
       moveNum: room.moves.length
     });
 
-    // Kiểm tra thắng
-    const redKing  = room.board.find(p => p.t === 'K' && p.s === 'r');
-    const blackKing = room.board.find(p => p.t === 'K' && p.s === 'b');
-    if (!redKing)   { endGame(roomId, 'b', 'Chiếu hết'); return; }
-    if (!blackKing) { endGame(roomId, 'r', 'Chiếu hết'); return; }
+    // Kiểm tra kết thúc ngay sau khi broadcast
+    const winner = checkResult(room.board, justMoved);
+    if (winner !== null) {
+      endGame(roomId, winner, 'Chiếu hết');
+    }
   });
 
   // Chat
