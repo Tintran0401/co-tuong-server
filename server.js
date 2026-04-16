@@ -100,13 +100,19 @@ function getRawMoves(p,board,isHiddenMode=false){
   if(t==='K'){[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
   else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;
-    if(isHiddenMode) add(nr,nc);
-    else if(inPalace(nr,nc,s)) add(nr,nc);
+    if(isHiddenMode&&!p.hidden) add(nr,nc);   // đã lật trong cờ úp: tự do
+    else if(inPalace(nr,nc,s)) add(nr,nc);    // úp/cờ thường: trong cung
   });}
   else if(t==='B'){[[2,2],[2,-2],[-2,2],[-2,-2]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
     if(getAt(board,r+dr/2,c+dc/2))return;
-    if(!isHiddenMode){if(s==='r'&&nr<5)return;if(s==='b'&&nr>4)return;}
+    if(isHiddenMode&&!p.hidden){
+      // đã lật trong cờ úp: toàn bàn
+    } else {
+      // úp/cờ thường: không qua sông
+      if(s==='r'&&nr<5)return;
+      if(s==='b'&&nr>4)return;
+    }
     add(nr,nc);});}
   else if(t==='N'){[[1,2],[1,-2],[-1,2],[-1,-2],[2,1],[2,-1],[-2,1],[-2,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
