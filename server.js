@@ -89,7 +89,9 @@ function inPalace(r,c,s){return s==='r'?(r>=7&&r<=9&&c>=3&&c<=5):(r>=0&&r<=2&&c>
 function getAt(board,r,c){return board.find(p=>p.r===r&&p.c===c)||null;}
 
 function getRawMoves(p,board){
-  const mv=[],{t,s,r,c}=p;
+  const mv=[],{s,r,c}=p;
+  // Quân úp dùng posType, quân đã lật dùng t
+  const t = (p.hidden && p.posType) ? p.posType : p.t;
   const add=(nr,nc)=>{
     if(!onBoard(nr,nc))return;
     const tg=getAt(board,nr,nc);
@@ -97,11 +99,19 @@ function getRawMoves(p,board){
     mv.push([nr,nc]);
   };
   if(t==='K'){[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
-  else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
+  else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{
+    const nr=r+dr,nc=c+dc;
+    if(p.hidden) add(nr,nc); // úp: đi cả bàn
+    else if(inPalace(nr,nc,s)) add(nr,nc);
+  });}
   else if(t==='B'){[[2,2],[2,-2],[-2,2],[-2,-2]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
     if(getAt(board,r+dr/2,c+dc/2))return;
-    if(s==='r'&&nr<5)return;if(s==='b'&&nr>4)return;add(nr,nc);});}
+    if(!p.hidden){ // ngửa: giới hạn sân nhà
+      if(s==='r'&&nr<5)return;
+      if(s==='b'&&nr>4)return;
+    }
+    add(nr,nc);});}
   else if(t==='N'){[[1,2],[1,-2],[-1,2],[-1,-2],[2,1],[2,-1],[-2,1],[-2,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
     const blk=Math.abs(dr)===2?getAt(board,r+(dr>0?1:-1),c):getAt(board,r,c+(dc>0?1:-1));
