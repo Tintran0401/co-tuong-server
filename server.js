@@ -218,11 +218,6 @@ io.on('connection', socket => {
     const piece = room.board.find(p => p.id === pieceId);
     if (!piece) return;
 
-    // Lật quân cờ úp
-    if (room.mode === 'hidden' && piece.hidden) {
-      piece.hidden = false; piece.revealed = true;
-    }
-
     // Bắt quân
     const capIdx = room.board.findIndex(p => p.r === toR && p.c === toC && p.s !== piece.s);
     let captured = null;
@@ -231,9 +226,14 @@ io.on('connection', socket => {
       room.board.splice(capIdx, 1);
     }
 
-    const justMoved = piece.s; // phe vừa đi
+    const justMoved = piece.s;
     const from = { r: piece.r, c: piece.c };
     piece.r = toR; piece.c = toC;
+
+    // Lật quân cờ úp SAU KHI đến ô mới
+    if (room.mode === 'hidden' && piece.hidden) {
+      piece.hidden = false; piece.revealed = true;
+    }
 
     // Đổi lượt
     room.turn = room.turn === 'r' ? 'b' : 'r';
