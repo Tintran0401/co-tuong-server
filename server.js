@@ -57,21 +57,29 @@ function mkBoard() {
 
 function mkHiddenBoard() {
   const board = mkBoard();
-  // Xáo trộn MỖI PHE trong sân của mình
-  ['r','b'].forEach(side=>{
+  const original = mkBoard();
+  // Bản đồ vị trí gốc → loại quân
+  const posToType = {};
+  original.forEach(p => { posToType[`${p.s}_${p.r}_${p.c}`] = p.t; });
+
+  ['r','b'].forEach(side => {
     const pieces = board.filter(p => p.s === side && p.t !== 'K');
     const positions = pieces.map(p => ({ r: p.r, c: p.c }));
-    // Fisher-Yates shuffle trong sân phe đó
     for (let i = positions.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [positions[i], positions[j]] = [positions[j], positions[i]];
     }
-    pieces.forEach((p, i) => { p.r = positions[i].r; p.c = positions[i].c; });
-    // Úp mặt tất cả trừ tướng
-    pieces.forEach(p => { p.hidden = true; p.revealed = false; });
+    pieces.forEach((p, i) => {
+      const newPos = positions[i];
+      p.r = newPos.r; p.c = newPos.c;
+      // posType = loại quân của ô đó trong bố cục gốc
+      p.posType = posToType[`${side}_${newPos.r}_${newPos.c}`] || p.t;
+      p.hidden = true; p.revealed = false;
+    });
   });
-  // Tướng ngửa
-  board.filter(p => p.t === 'K').forEach(p => { p.hidden = false; p.revealed = true; });
+  board.filter(p => p.t === 'K').forEach(p => {
+    p.hidden = false; p.revealed = true; p.posType = null;
+  });
   return board;
 }
 
@@ -230,9 +238,9 @@ io.on('connection', socket => {
     const from = { r: piece.r, c: piece.c };
     piece.r = toR; piece.c = toC;
 
-    // Lật quân cờ úp SAU KHI đến ô mới
+    // Lật quân cờ úp SAU KHI đến ô mới + xóa posType
     if (room.mode === 'hidden' && piece.hidden) {
-      piece.hidden = false; piece.revealed = true;
+      piece.hidden = false; piece.revealed = true; piece.posType = null;
     }
 
     // Đổi lượt
