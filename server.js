@@ -27,6 +27,19 @@ app.use(express.json());
 app.get('/', (_, res) => res.send('Cờ Tướng Server đang chạy ✅'));
 app.get('/health', (_, res) => res.json({ status: 'ok', rooms: Object.keys(rooms).length }));
 
+// Danh sách phòng đang chơi — cho màn Live
+app.get('/rooms', (_, res) => {
+  res.header('Access-Control-Allow-Origin','*');
+  const list = Object.values(rooms).map(r => ({
+    id: r.id,
+    mode: r.mode,
+    players: r.players.map(p => p.name),
+    moves: r.moves.length,
+    spectators: r.spectators ? r.spectators.length : 0
+  }));
+  res.json(list);
+});
+
 // ── ROOMS ──
 // rooms[roomId] = { id, mode, players:[{id,name,side}], board, turn, moves, spectators:[] }
 const rooms = {};
