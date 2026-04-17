@@ -193,12 +193,16 @@ io.on('connection', socket => {
       const p1 = { id: socket.id,   name, side: redFirst ? 'r' : 'b' };
       const p2 = { id: opponentId,  name: io.sockets.sockets.get(opponentId)?.data?.name || 'Đối Thủ', side: redFirst ? 'b' : 'r' };
 
+      const baseTime = { flash:60, normal:600, hidden:300 }[mode];
       rooms[roomId] = {
         id: roomId, mode,
         players: [p1, p2],
         board, turn: 'r',
         moves: [], drawOffer: null,
-        spectators: []
+        spectators: [],
+        baseTime,
+        rTime: baseTime, bTime: baseTime,  // thời gian còn lại mỗi bên
+        startTime: Date.now()              // thời điểm bắt đầu ván
       };
 
       socket.join(roomId);
@@ -265,17 +269,28 @@ io.on('connection', socket => {
       piece.hidden = false; piece.revealed = true; piece.posType = null;
     }
 
+    // Cập nhật thời gian — trừ thời gian đã dùng cho phe vừa đi
+    const now = Date.now();
+    if (room.lastMoveTime) {
+      const elapsed = Math.floor((now - room.lastMoveTime) / 1000);
+      if (justMoved === 'r') room.rTime = Math.max(0, room.rTime - elapsed);
+      else room.bTime = Math.max(0, room.bTime - elapsed);
+    }
+    room.lastMoveTime = now;
+
     // Đổi lượt
     room.turn = room.turn === 'r' ? 'b' : 'r';
     room.moves.push({ pieceId, from, to: { r: toR, c: toC } });
 
-    // Broadcast nước đi cho cả phòng
+    // Broadcast nước đi cho cả phòng (kèm thời gian)
     io.to(roomId).emit('moved', {
       pieceId, from, to: { r: toR, c: toC },
       captured: captured ? captured.id : null,
       board: room.board,
       turn: room.turn,
-      moveNum: room.moves.length
+      moveNum: room.moves.length,
+      rTime: room.rTime,
+      bTime: room.bTime
     });
 
     // Kiểm tra kết thúc ngay sau khi broadcast
@@ -334,14 +349,24 @@ io.on('connection', socket => {
     socket.join(roomId);
     if (!room.spectators) room.spectators = [];
     room.spectators.push(socket.id);
-    // Gửi trạng thái hiện tại ngay
+    // Tính thời gian hiện tại của phe đang đi
+    let rTime = room.rTime || room.baseTime || 600;
+    let bTime = room.bTime || room.baseTime || 600;
+    if (room.lastMoveTime) {
+      const elapsed = Math.floor((Date.now() - room.lastMoveTime) / 1000);
+      if (room.turn === 'r') rTime = Math.max(0, rTime - elapsed);
+      else bTime = Math.max(0, bTime - elapsed);
+    }
     socket.emit('spectate_start', {
       roomId,
       board: room.board,
       turn: room.turn,
       players: room.players.map(p => ({ name: p.name, side: p.side })),
       moves: room.moves.length,
-      mode: room.mode
+      mode: room.mode,
+      rTime, bTime,
+      baseTime: room.baseTime || 600,
+      lastMoveTime: room.lastMoveTime || Date.now()
     });
     console.log(`[👁] ${socket.id} xem phòng ${roomId}`);
   });
