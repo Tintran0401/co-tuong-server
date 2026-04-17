@@ -324,7 +324,34 @@ io.on('connection', socket => {
     const player = room.players.find(p => p.id === socket.id);
     if (!player) return;
     const winner = player.side === 'r' ? 'b' : 'r';
-    endGame(roomId, winner, 'opponent_quit'); // dùng reason nhất quán
+    endGame(roomId, winner, 'opponent_quit');
+  });
+
+  // Xem ván live
+  socket.on('spectate', ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room) { socket.emit('spectate_error', 'Phòng không tồn tại hoặc đã kết thúc'); return; }
+    socket.join(roomId);
+    if (!room.spectators) room.spectators = [];
+    room.spectators.push(socket.id);
+    // Gửi trạng thái hiện tại ngay
+    socket.emit('spectate_start', {
+      roomId,
+      board: room.board,
+      turn: room.turn,
+      players: room.players.map(p => ({ name: p.name, side: p.side })),
+      moves: room.moves.length,
+      mode: room.mode
+    });
+    console.log(`[👁] ${socket.id} xem phòng ${roomId}`);
+  });
+
+  socket.on('stop_spectate', ({ roomId }) => {
+    const room = rooms[roomId];
+    if (room && room.spectators) {
+      room.spectators = room.spectators.filter(id => id !== socket.id);
+    }
+    socket.leave(roomId);
   });
 
   // Ngắt kết nối
