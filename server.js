@@ -49,6 +49,8 @@ app.get('/leaderboard', (_, res) => {
   res.header('Access-Control-Allow-Origin','*');
   res.json(leaderboard);
 });
+
+app.get('/rooms', (_, res) => {
   res.header('Access-Control-Allow-Origin','*');
   const list = Object.values(rooms).map(r => ({
     id: r.id,
