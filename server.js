@@ -27,8 +27,28 @@ app.use(express.json());
 app.get('/', (_, res) => res.send('Cờ Tướng Server đang chạy ✅'));
 app.get('/health', (_, res) => res.json({ status: 'ok', rooms: Object.keys(rooms).length }));
 
-// Danh sách phòng đang chơi — cho màn Live
-app.get('/rooms', (_, res) => {
+// Leaderboard — lưu top players theo mode
+const leaderboard = { flash:[], normal:[], hidden:[] };
+
+function updateLeaderboard(name, modeName, won, eloChange, newElo){
+  const lb = leaderboard[modeName];
+  if(!lb) return;
+  let entry = lb.find(e=>e.name===name);
+  if(!entry){ entry={name,elo:newElo,w:0,l:0,d:0}; lb.push(entry); }
+  entry.elo=newElo;
+  if(won==='win') entry.w++;
+  else if(won==='lose') entry.l++;
+  else entry.d++;
+  // Sắp xếp theo ELO
+  lb.sort((a,b)=>b.elo-a.elo);
+  // Giữ top 20
+  if(lb.length>20) lb.splice(20);
+}
+
+app.get('/leaderboard', (_, res) => {
+  res.header('Access-Control-Allow-Origin','*');
+  res.json(leaderboard);
+});
   res.header('Access-Control-Allow-Origin','*');
   const list = Object.values(rooms).map(r => ({
     id: r.id,
@@ -399,8 +419,17 @@ function endGame(roomId, winner, reason) {
   const room = rooms[roomId];
   if (!room) return;
   io.to(roomId).emit('game_over', { winner, reason });
+  // Cập nhật leaderboard
+  if(winner && reason !== 'opponent_quit'){
+    const k={flash:20,normal:15,hidden:25}[room.mode]||15;
+    room.players.forEach(p=>{
+      const won=p.side===winner;
+      const eloChg=won?Math.round(k*.9):-Math.round(k*.7);
+      const baseElo=1200; // default
+      updateLeaderboard(p.name, room.mode, won?'win':'lose', eloChg, baseElo+eloChg);
+    });
+  }
   console.log(`[END] Phòng ${roomId}: ${winner || 'hòa'} — ${reason}`);
-  // Xóa phòng sau 30 giây
   setTimeout(() => delete rooms[roomId], 30000);
 }
 
