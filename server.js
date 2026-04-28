@@ -1,5 +1,5 @@
 /*
-  CỜ TƯỚNG ONLINE — Backend Server
+  CỜ TƯỚNG ONLINE — Backend Server v2.1
   Node.js + Socket.IO
   Deploy: Railway.app
 */
@@ -11,11 +11,7 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET','POST']
-  },
-  // Railway cần cả polling lẫn websocket
+  cors: { origin: '*', methods: ['GET','POST'] },
   transports: ['polling', 'websocket'],
   allowEIO3: true,
   pingTimeout: 60000,
@@ -23,56 +19,80 @@ const io = new Server(server, {
 });
 
 app.use(express.json());
-// Cần thiết cho Socket.IO polling trên Railway
-app.get('/', (_, res) => res.send('Cờ Tướng Server đang chạy ✅'));
-app.get('/health', (_, res) => res.json({ status: 'ok', rooms: Object.keys(rooms).length }));
 
-// Leaderboard — lưu top players theo mode
+// ── State ──
+const rooms = {};
+const queue = { flash: null, normal: null, hidden: null };
+
+// Leaderboard: lưu ELO thực tế của từng player theo mode
 const leaderboard = { flash:[], normal:[], hidden:[] };
 
-function updateLeaderboard(name, modeName, won, eloChange, newElo){
-  const lb = leaderboard[modeName];
-  if(!lb) return;
-  let entry = lb.find(e=>e.name===name);
-  if(!entry){ entry={name,elo:newElo,w:0,l:0,d:0}; lb.push(entry); }
-  entry.elo=newElo;
-  if(won==='win') entry.w++;
-  else if(won==='lose') entry.l++;
-  else entry.d++;
-  // Sắp xếp theo ELO
-  lb.sort((a,b)=>b.elo-a.elo);
-  // Giữ top 20
-  if(lb.length>20) lb.splice(20);
-}
+// ── HTTP Endpoints ──
+app.get('/', (_, res) => res.send('🎭 Cờ Tướng Server v2.1 đang chạy ✅'));
+
+app.get('/health', (_, res) => {
+  res.header('Access-Control-Allow-Origin','*');
+  res.json({
+    status: 'ok',
+    rooms: Object.keys(rooms).length,
+    queues: { flash: !!queue.flash, normal: !!queue.normal, hidden: !!queue.hidden },
+    uptime: Math.floor(process.uptime())
+  });
+});
+
+app.get('/rooms', (_, res) => {
+  res.header('Access-Control-Allow-Origin','*');
+  const list = Object.values(rooms)
+    .filter(r => r.players.length === 2 && !r.ended)
+    .map(r => {
+      // Tính thời gian hiện tại
+      let rTime = r.rTime || r.baseTime || 600;
+      let bTime = r.bTime || r.baseTime || 600;
+      if (r.lastMoveTime) {
+        const elapsed = Math.floor((Date.now() - r.lastMoveTime) / 1000);
+        if (r.turn === 'r') rTime = Math.max(0, rTime - elapsed);
+        else bTime = Math.max(0, bTime - elapsed);
+      }
+      return {
+        id: r.id,
+        mode: r.mode,
+        players: r.players.map(p => p.name),
+        moves: r.moves.length,
+        spectators: r.spectators ? r.spectators.length : 0,
+        rTime, bTime
+      };
+    });
+  res.json(list);
+});
 
 app.get('/leaderboard', (_, res) => {
   res.header('Access-Control-Allow-Origin','*');
   res.json(leaderboard);
 });
 
-app.get('/rooms', (_, res) => {
-  res.header('Access-Control-Allow-Origin','*');
-  const list = Object.values(rooms).map(r => ({
-    id: r.id,
-    mode: r.mode,
-    players: r.players.map(p => p.name),
-    moves: r.moves.length,
-    spectators: r.spectators ? r.spectators.length : 0
-  }));
-  res.json(list);
-});
+// ── Leaderboard helpers ──
+function updateLeaderboard(name, mode, result, newElo) {
+  const lb = leaderboard[mode];
+  if (!lb) return;
+  let entry = lb.find(e => e.name === name);
+  if (!entry) {
+    entry = { name, elo: newElo, w:0, l:0, d:0, games:0 };
+    lb.push(entry);
+  }
+  entry.elo = newElo;
+  entry.games++;
+  if (result === 'win') entry.w++;
+  else if (result === 'lose') entry.l++;
+  else entry.d++;
+  lb.sort((a,b) => b.elo - a.elo);
+  if (lb.length > 50) lb.splice(50);
+}
 
-// ── ROOMS ──
-// rooms[roomId] = { id, mode, players:[{id,name,side}], board, turn, moves, spectators:[] }
-const rooms = {};
-// queue[mode] = socketId đang chờ
-const queue = { flash: null, normal: null, hidden: null };
-
+// ── Board helpers ──
 function makeRoomId() {
   return Math.random().toString(36).slice(2,8).toUpperCase();
 }
 
-// ── INITIAL BOARD ──
 function mkBoard() {
   return [
     {t:'R',s:'b',r:0,c:0,id:0},{t:'N',s:'b',r:0,c:1,id:1},{t:'B',s:'b',r:0,c:2,id:2},
@@ -92,11 +112,8 @@ function mkBoard() {
 
 function mkHiddenBoard() {
   const board = mkBoard();
-  const original = mkBoard();
-  // Bản đồ vị trí gốc → loại quân
   const posToType = {};
-  original.forEach(p => { posToType[`${p.s}_${p.r}_${p.c}`] = p.t; });
-
+  mkBoard().forEach(p => { posToType[`${p.s}_${p.r}_${p.c}`] = p.t; });
   ['r','b'].forEach(side => {
     const pieces = board.filter(p => p.s === side && p.t !== 'K');
     const positions = pieces.map(p => ({ r: p.r, c: p.c }));
@@ -105,10 +122,9 @@ function mkHiddenBoard() {
       [positions[i], positions[j]] = [positions[j], positions[i]];
     }
     pieces.forEach((p, i) => {
-      const newPos = positions[i];
-      p.r = newPos.r; p.c = newPos.c;
-      // posType = loại quân của ô đó trong bố cục gốc
-      p.posType = posToType[`${side}_${newPos.r}_${newPos.c}`] || p.t;
+      const np = positions[i];
+      p.r = np.r; p.c = np.c;
+      p.posType = posToType[`${side}_${np.r}_${np.c}`] || p.t;
       p.hidden = true; p.revealed = false;
     });
   });
@@ -118,36 +134,24 @@ function mkHiddenBoard() {
   return board;
 }
 
-// ── CHESS LOGIC TRÊN SERVER ──
+// ── Chess logic ──
 function onBoard(r,c){return r>=0&&r<10&&c>=0&&c<9;}
 function inPalace(r,c,s){return s==='r'?(r>=7&&r<=9&&c>=3&&c<=5):(r>=0&&r<=2&&c>=3&&c<=5);}
 function getAt(board,r,c){return board.find(p=>p.r===r&&p.c===c)||null;}
 
 function getRawMoves(p,board,isHiddenMode=false){
   const mv=[],{s,r,c}=p;
-  const t = (p.hidden && p.posType) ? p.posType : p.t;
-  const add=(nr,nc)=>{
-    if(!onBoard(nr,nc))return;
-    const tg=getAt(board,nr,nc);
-    if(tg&&tg.s===s)return;
-    mv.push([nr,nc]);
-  };
+  const t=(p.hidden&&p.posType)?p.posType:p.t;
+  const add=(nr,nc)=>{if(!onBoard(nr,nc))return;const tg=getAt(board,nr,nc);if(tg&&tg.s===s)return;mv.push([nr,nc]);};
   if(t==='K'){[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dr,dc])=>{const nr=r+dr,nc=c+dc;if(inPalace(nr,nc,s))add(nr,nc);});}
   else if(t==='A'){[[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;
-    if(isHiddenMode&&!p.hidden) add(nr,nc);   // đã lật trong cờ úp: tự do
-    else if(inPalace(nr,nc,s)) add(nr,nc);    // úp/cờ thường: trong cung
-  });}
+    if(isHiddenMode&&!p.hidden)add(nr,nc);else if(inPalace(nr,nc,s))add(nr,nc);});}
   else if(t==='B'){[[2,2],[2,-2],[-2,2],[-2,-2]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
     if(getAt(board,r+dr/2,c+dc/2))return;
-    if(isHiddenMode&&!p.hidden){
-      // đã lật trong cờ úp: toàn bàn
-    } else {
-      // úp/cờ thường: không qua sông
-      if(s==='r'&&nr<5)return;
-      if(s==='b'&&nr>4)return;
-    }
+    if(isHiddenMode&&!p.hidden){}
+    else{if(s==='r'&&nr<5)return;if(s==='b'&&nr>4)return;}
     add(nr,nc);});}
   else if(t==='N'){[[1,2],[1,-2],[-1,2],[-1,-2],[2,1],[2,-1],[-2,1],[-2,-1]].forEach(([dr,dc])=>{
     const nr=r+dr,nc=c+dc;if(!onBoard(nr,nc))return;
@@ -177,9 +181,8 @@ function isInCheck(s,board,isHiddenMode=false){
 function getSafeMoves(p,board,isHiddenMode=false){
   return getRawMoves(p,board,isHiddenMode).filter(([mr,mc])=>{
     const sim=board.filter(x=>!(x.r===mr&&x.c===mc&&x.s!==p.s)).map(x=>({...x}));
-    const mp=sim.find(x=>x.id===p.id);
-    if(!mp)return false;mp.r=mr;mp.c=mc;
-    return !isInCheck(p.s,sim,isHiddenMode);
+    const mp=sim.find(x=>x.id===p.id);if(!mp)return false;
+    mp.r=mr;mp.c=mc;return !isInCheck(p.s,sim,isHiddenMode);
   });
 }
 
@@ -189,109 +192,103 @@ function hasAnyMoves(s,board,isHiddenMode=false){
 
 function checkResult(board,justMovedSide,isHiddenMode=false){
   const next=justMovedSide==='r'?'b':'r';
-  if(!hasAnyMoves(next,board,isHiddenMode)) return justMovedSide;
+  if(!hasAnyMoves(next,board,isHiddenMode))return justMovedSide;
   return null;
 }
 
-
-// ── SOCKET EVENTS ──
+// ── Socket.IO ──
 io.on('connection', socket => {
-  console.log(`[+] ${socket.id} kết nối`);
+  console.log(`[+] ${socket.id} kết nối (tổng: ${io.engine.clientsCount})`);
 
   // Tìm trận
-  socket.on('find_match', ({ mode, name }) => {
-    console.log(`[Q] ${name} tìm trận ${mode}`);
+  socket.on('find_match', ({ mode, name, elo=1200 }) => {
+    if (!['flash','normal','hidden'].includes(mode)) return;
+    const safeName = String(name||'Người Chơi').slice(0,20);
+    console.log(`[Q] ${safeName}(${elo}) tìm trận ${mode}`);
 
-    if (queue[mode] && queue[mode] !== socket.id) {
-      // Tìm thấy đối thủ — tạo phòng
-      const opponentId = queue[mode];
+    if (queue[mode] && queue[mode].id !== socket.id &&
+        io.sockets.sockets.has(queue[mode].id)) {
+      // Ghép trận
+      const opp = queue[mode];
       queue[mode] = null;
 
       const roomId = makeRoomId();
       const board = mode === 'hidden' ? mkHiddenBoard() : mkBoard();
-
-      // Random ai đỏ ai đen
       const redFirst = Math.random() < 0.5;
-      const p1 = { id: socket.id,   name, side: redFirst ? 'r' : 'b' };
-      const p2 = { id: opponentId,  name: io.sockets.sockets.get(opponentId)?.data?.name || 'Đối Thủ', side: redFirst ? 'b' : 'r' };
-
+      const p1 = { id: socket.id, name: safeName, side: redFirst?'r':'b', elo };
+      const p2 = { id: opp.id, name: opp.name, side: redFirst?'b':'r', elo: opp.elo||1200 };
       const baseTime = { flash:60, normal:600, hidden:300 }[mode];
+
       rooms[roomId] = {
         id: roomId, mode,
         players: [p1, p2],
         board, turn: 'r',
         moves: [], drawOffer: null,
         spectators: [],
-        baseTime,
-        rTime: baseTime, bTime: baseTime,  // thời gian còn lại mỗi bên
-        startTime: Date.now()              // thời điểm bắt đầu ván
+        baseTime, rTime: baseTime, bTime: baseTime,
+        startTime: Date.now(), lastMoveTime: null,
+        ended: false
       };
 
       socket.join(roomId);
-      io.sockets.sockets.get(opponentId)?.join(roomId);
+      io.sockets.sockets.get(opp.id)?.join(roomId);
 
-      // Thông báo bắt đầu cho cả 2
-      io.to(socket.id).emit('match_found', {
-        roomId, side: p1.side, opponent: p2.name,
-        board, turn: 'r', mode,
-        baseTime: { flash:60, normal:600, hidden:300 }[mode]
-      });
-      io.to(opponentId).emit('match_found', {
-        roomId, side: p2.side, opponent: p1.name,
-        board, turn: 'r', mode,
-        baseTime: { flash:60, normal:600, hidden:300 }[mode]
-      });
-
+      const matchData = { roomId, board, turn:'r', mode, baseTime };
+      io.to(socket.id).emit('match_found', { ...matchData, side: p1.side, opponent: p2.name, opponentElo: p2.elo });
+      io.to(opp.id).emit('match_found', { ...matchData, side: p2.side, opponent: p1.name, opponentElo: p1.elo });
       console.log(`[R] Phòng ${roomId}: ${p1.name}(${p1.side}) vs ${p2.name}(${p2.side})`);
 
     } else {
-      // Chưa có đối thủ — vào hàng chờ
-      queue[mode] = socket.id;
-      socket.data.name = name;
+      // Chờ đối thủ
+      if (queue[mode]) {
+        // Xóa người cũ đã offline
+        queue[mode] = null;
+      }
+      queue[mode] = { id: socket.id, name: safeName, elo };
+      socket.data.name = safeName;
       socket.data.mode = mode;
       socket.emit('waiting', { mode });
-      console.log(`[W] ${name} đang chờ ${mode}`);
+      console.log(`[W] ${safeName} chờ ${mode}`);
     }
   });
 
   // Hủy tìm trận
   socket.on('cancel_find', () => {
     Object.keys(queue).forEach(m => {
-      if (queue[m] === socket.id) queue[m] = null;
+      if (queue[m]?.id === socket.id) queue[m] = null;
     });
-    console.log(`[-] ${socket.id} hủy tìm trận`);
   });
 
-  // Di chuyển quân
+  // Di chuyển
   socket.on('move', ({ roomId, pieceId, toR, toC }) => {
     const room = rooms[roomId];
-    if (!room) return;
-
+    if (!room || room.ended) return;
     const player = room.players.find(p => p.id === socket.id);
-    if (!player || player.side !== room.turn) return; // không phải lượt
+    if (!player || player.side !== room.turn) return;
 
-    // Thực hiện nước đi trên server
     const piece = room.board.find(p => p.id === pieceId);
     if (!piece) return;
 
-    // Bắt quân
-    const capIdx = room.board.findIndex(p => p.r === toR && p.c === toC && p.s !== piece.s);
-    let captured = null;
-    if (capIdx !== -1) {
-      captured = room.board[capIdx];
-      room.board.splice(capIdx, 1);
+    // Validate nước đi hợp lệ
+    const legal = getSafeMoves(piece, room.board, room.mode==='hidden');
+    if (!legal.some(([r,c]) => r===toR && c===toC)) {
+      socket.emit('move_invalid', { pieceId, toR, toC });
+      return;
     }
 
+    // Bắt quân
+    const capIdx = room.board.findIndex(p => p.r===toR && p.c===toC && p.s!==piece.s);
+    const captured = capIdx !== -1 ? room.board.splice(capIdx, 1)[0] : null;
     const justMoved = piece.s;
     const from = { r: piece.r, c: piece.c };
     piece.r = toR; piece.c = toC;
 
-    // Lật quân cờ úp SAU KHI đến ô mới + xóa posType
+    // Lật quân cờ úp
     if (room.mode === 'hidden' && piece.hidden) {
       piece.hidden = false; piece.revealed = true; piece.posType = null;
     }
 
-    // Cập nhật thời gian — trừ thời gian đã dùng cho phe vừa đi
+    // Cập nhật đồng hồ
     const now = Date.now();
     if (room.lastMoveTime) {
       const elapsed = Math.floor((now - room.lastMoveTime) / 1000);
@@ -299,12 +296,10 @@ io.on('connection', socket => {
       else room.bTime = Math.max(0, room.bTime - elapsed);
     }
     room.lastMoveTime = now;
-
-    // Đổi lượt
     room.turn = room.turn === 'r' ? 'b' : 'r';
     room.moves.push({ pieceId, from, to: { r: toR, c: toC } });
 
-    // Broadcast nước đi cho cả phòng (kèm thời gian)
+    // Broadcast
     io.to(roomId).emit('moved', {
       pieceId, from, to: { r: toR, c: toC },
       captured: captured ? captured.id : null,
@@ -315,63 +310,42 @@ io.on('connection', socket => {
       bTime: room.bTime
     });
 
-    // Kiểm tra kết thúc ngay sau khi broadcast
+    // Kiểm tra kết thúc
     const winner = checkResult(room.board, justMoved, room.mode==='hidden');
-    if (winner !== null) {
-      endGame(roomId, winner, 'Chiếu hết');
-    }
+    if (winner !== null) endGame(roomId, winner, 'Chiếu hết');
   });
 
-  // Chat
+  // Chat / emoji
   socket.on('chat', ({ roomId, text }) => {
     const room = rooms[roomId];
     if (!room) return;
     const player = room.players.find(p => p.id === socket.id);
     const name = player?.name || 'Ẩn danh';
-    io.to(roomId).emit('chat_msg', { name, text, time: Date.now() });
+    const safeText = String(text||'').slice(0,100);
+    io.to(roomId).emit('chat_msg', { name, text: safeText });
   });
 
-  // Cầu hòa
-  socket.on('offer_draw', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
-    room.drawOffer = socket.id;
-    const opp = room.players.find(p => p.id !== socket.id);
-    if (opp) io.to(opp.id).emit('draw_offered');
-  });
-
-  socket.on('accept_draw', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room || room.drawOffer === socket.id) return;
-    endGame(roomId, null, 'Hòa cờ');
-  });
-
-  socket.on('decline_draw', ({ roomId }) => {
-    const room = rooms[roomId];
-    if (!room) return;
-    room.drawOffer = null;
-    const offerer = room.players.find(p => p.id === room.drawOffer);
-    if (offerer) io.to(offerer.id).emit('draw_declined');
-  });
-
-  // Đầu hàng
+  // Đầu hàng / thoát
   socket.on('resign', ({ roomId }) => {
     const room = rooms[roomId];
-    if (!room) return;
+    if (!room || room.ended) return;
     const player = room.players.find(p => p.id === socket.id);
     if (!player) return;
     const winner = player.side === 'r' ? 'b' : 'r';
     endGame(roomId, winner, 'opponent_quit');
   });
 
-  // Xem ván live
+  // Xem live
   socket.on('spectate', ({ roomId }) => {
     const room = rooms[roomId];
-    if (!room) { socket.emit('spectate_error', 'Phòng không tồn tại hoặc đã kết thúc'); return; }
+    if (!room || room.ended) {
+      socket.emit('spectate_error', 'Phòng không tồn tại hoặc đã kết thúc');
+      return;
+    }
     socket.join(roomId);
     if (!room.spectators) room.spectators = [];
-    room.spectators.push(socket.id);
-    // Tính thời gian hiện tại của phe đang đi
+    if (!room.spectators.includes(socket.id)) room.spectators.push(socket.id);
+
     let rTime = room.rTime || room.baseTime || 600;
     let bTime = room.bTime || room.baseTime || 600;
     if (room.lastMoveTime) {
@@ -380,34 +354,45 @@ io.on('connection', socket => {
       else bTime = Math.max(0, bTime - elapsed);
     }
     socket.emit('spectate_start', {
-      roomId,
-      board: room.board,
-      turn: room.turn,
-      players: room.players.map(p => ({ name: p.name, side: p.side })),
-      moves: room.moves.length,
-      mode: room.mode,
-      rTime, bTime,
-      baseTime: room.baseTime || 600,
+      roomId, board: room.board, turn: room.turn,
+      players: room.players.map(p => ({ name: p.name, side: p.side, elo: p.elo })),
+      moves: room.moves.length, mode: room.mode,
+      rTime, bTime, baseTime: room.baseTime || 600,
       lastMoveTime: room.lastMoveTime || Date.now()
     });
-    console.log(`[👁] ${socket.id} xem phòng ${roomId}`);
   });
 
   socket.on('stop_spectate', ({ roomId }) => {
     const room = rooms[roomId];
-    if (room && room.spectators) {
+    if (room?.spectators) {
       room.spectators = room.spectators.filter(id => id !== socket.id);
     }
     socket.leave(roomId);
   });
 
+  // Hỏi danh sách phòng qua socket
+  socket.on('get_rooms', () => {
+    const list = Object.values(rooms)
+      .filter(r => r.players.length === 2 && !r.ended)
+      .map(r => ({
+        id: r.id, mode: r.mode,
+        players: r.players.map(p => p.name),
+        moves: r.moves.length,
+        spectators: r.spectators?.length || 0
+      }));
+    socket.emit('rooms_list', list);
+  });
+
   // Ngắt kết nối
-  socket.on('disconnect', () => {
-    console.log(`[-] ${socket.id} ngắt kết nối`);
+  socket.on('disconnect', reason => {
+    console.log(`[-] ${socket.id} ngắt (${reason})`);
+    // Xóa khỏi hàng chờ
     Object.keys(queue).forEach(m => {
-      if (queue[m] === socket.id) queue[m] = null;
+      if (queue[m]?.id === socket.id) queue[m] = null;
     });
+    // Xử lý phòng đang chơi
     Object.values(rooms).forEach(room => {
+      if (room.ended) return;
       const player = room.players.find(p => p.id === socket.id);
       if (player) {
         const winner = player.side === 'r' ? 'b' : 'r';
@@ -417,23 +402,49 @@ io.on('connection', socket => {
   });
 });
 
+// ── End game ──
 function endGame(roomId, winner, reason) {
   const room = rooms[roomId];
-  if (!room) return;
+  if (!room || room.ended) return;
+  room.ended = true;
+
   io.to(roomId).emit('game_over', { winner, reason });
-  // Cập nhật leaderboard
-  if(winner && reason !== 'opponent_quit'){
-    const k={flash:20,normal:15,hidden:25}[room.mode]||15;
-    room.players.forEach(p=>{
-      const won=p.side===winner;
-      const eloChg=won?Math.round(k*.9):-Math.round(k*.7);
-      const baseElo=1200; // default
-      updateLeaderboard(p.name, room.mode, won?'win':'lose', eloChg, baseElo+eloChg);
+
+  // Cập nhật leaderboard với ELO thực tế từ client
+  // Server chỉ track thắng/thua/hòa, ELO tính trên client
+  if (winner && reason !== 'opponent_quit') {
+    const k = { flash:20, normal:15, hidden:25 }[room.mode] || 15;
+    room.players.forEach(p => {
+      const won = p.side === winner;
+      const eloChg = won ? Math.round(k*.9) : -Math.round(k*.7);
+      const newElo = Math.max(100, (p.elo || 1200) + eloChg);
+      updateLeaderboard(p.name, room.mode, won?'win':'lose', newElo);
     });
   }
-  console.log(`[END] Phòng ${roomId}: ${winner || 'hòa'} — ${reason}`);
-  setTimeout(() => delete rooms[roomId], 30000);
+
+  console.log(`[END] ${roomId}: ${winner||'hòa'} — ${reason} (${room.moves.length} nước)`);
+
+  // Dọn dẹp sau 60 giây (để spectator kịp nhận game_over)
+  setTimeout(() => {
+    delete rooms[roomId];
+    console.log(`[DEL] Xóa phòng ${roomId}`);
+  }, 60000);
 }
 
+// Dọn dẹp phòng trống định kỳ mỗi 5 phút
+setInterval(() => {
+  const now = Date.now();
+  Object.entries(rooms).forEach(([id, room]) => {
+    const age = (now - room.startTime) / 1000 / 60; // phút
+    const maxAge = { flash: 5, normal: 40, hidden: 20 }[room.mode] || 30;
+    if (age > maxAge || room.ended) {
+      if (!room.ended) endGame(id, null, 'Hết giờ');
+      setTimeout(() => delete rooms[id], 5000);
+    }
+  });
+}, 5 * 60 * 1000);
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚂 Server chạy tại port ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`🚂 Cờ Tướng Server v2.1 chạy tại port ${PORT}`);
+});
