@@ -322,7 +322,8 @@ io.on('connection', socket => {
     const player = room.players.find(p => p.id === socket.id);
     const name = player?.name || 'Ẩn danh';
     const safeText = String(text||'').slice(0,100);
-    io.to(roomId).emit('chat_msg', { name, text: safeText });
+    // Chỉ gửi cho người kia trong room (KHÔNG gửi lại cho người gửi)
+    socket.to(roomId).emit('chat_msg', { name, text: safeText });
   });
 
   // Đầu hàng / thoát
